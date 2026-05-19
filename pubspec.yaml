@@ -1,0 +1,56 @@
+name: sports_nutrition_app
+description: Personalisierte Sport-Ernährungs-App mit Garmin-Integration
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP & API
+  dio: ^5.4.0
+  retrofit: ^4.1.0
+
+  # State Management
+  riverpod: ^2.5.1
+  flutter_riverpod: ^2.5.1
+
+  # Navigation
+  go_router: ^13.2.0
+
+  # Storage
+  flutter_secure_storage: ^10.2.0
+  shared_preferences: ^2.2.3
+
+  # Voice / Speech
+  speech_to_text: ^7.3.0
+  flutter_tts: ^4.0.2
+
+  # UI
+  google_fonts: ^6.2.1
+  fl_chart: ^0.68.0
+  cached_network_image: ^3.3.1
+
+  # Browser / URL
+  url_launcher: ^6.3.0
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.3.3
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.9
+  json_serializable: ^6.8.0
+  retrofit_generator: ^8.1.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
