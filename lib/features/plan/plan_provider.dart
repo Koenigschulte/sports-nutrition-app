@@ -19,7 +19,9 @@ class PlanMeal {
   final List<String> ingredients;
   final String instructions;
   final bool isEaten;
+  final bool isSkipped;
   final int alternativesCount;
+  final double servingSize;
 
   const PlanMeal({
     required this.id,
@@ -36,7 +38,9 @@ class PlanMeal {
     required this.ingredients,
     required this.instructions,
     required this.isEaten,
+    this.isSkipped = false,
     this.alternativesCount = 0,
+    this.servingSize = 1.0,
   });
 
   factory PlanMeal.fromJson(Map<String, dynamic> json) {
@@ -57,12 +61,15 @@ class PlanMeal {
       ingredients: (recipe['ingredients'] as List<dynamic>?)?.cast<String>() ?? [],
       instructions: recipe['instructions'] as String? ?? '',
       isEaten: json['is_eaten'] as bool? ?? false,
+      isSkipped: json['skipped'] as bool? ?? false,
       alternativesCount: (json['alternatives_count'] as num?)?.toInt() ?? 0,
+      servingSize: double.tryParse(json['serving_size']?.toString() ?? '') ?? 1.0,
     );
   }
 
   PlanMeal copyWith({
     bool? isEaten,
+    bool? isSkipped,
     String? recipeName,
     String? imageUrl,
     int? calories,
@@ -88,6 +95,7 @@ class PlanMeal {
     ingredients: ingredients ?? this.ingredients,
     instructions: instructions ?? this.instructions,
     isEaten: isEaten ?? this.isEaten,
+    isSkipped: isSkipped ?? this.isSkipped,
     alternativesCount: alternativesCount ?? this.alternativesCount,
   );
 
@@ -182,6 +190,22 @@ class WeekPlan {
     required this.weeklyLoadLevel,
   });
 
+  WeekPlan withMealSkipToggled(String mealId, bool isSkipped) {
+    final updatedByDay = mealsByDay.map((day, meals) {
+      final updated = meals
+          .map((m) => m.id == mealId ? m.copyWith(isSkipped: isSkipped) : m)
+          .toList();
+      return MapEntry(day, updated);
+    });
+    return WeekPlan(
+      id: id,
+      weekStart: weekStart,
+      trainingForecast: trainingForecast,
+      mealsByDay: updatedByDay,
+      weeklyLoadLevel: weeklyLoadLevel,
+    );
+  }
+
   WeekPlan withMealToggled(String mealId, bool isEaten) {
     final updatedByDay = mealsByDay.map((day, meals) {
       final updated = meals
@@ -260,6 +284,16 @@ class WeekPlanNotifier extends AsyncNotifier<WeekPlan?> {
     }
   }
 
+  Future<void> resetAndRegenerate() async {
+    final dio = ref.read(dioProvider);
+    state = const AsyncValue.loading();
+    try { await dio.delete('/plan/current'); } catch (_) {}
+    state = await AsyncValue.guard(() async {
+      final res = await dio.post('/plan/generate');
+      return _parsePlan(res.data as Map<String, dynamic>);
+    });
+  }
+
   Future<void> generatePlan() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
@@ -269,7 +303,7 @@ class WeekPlanNotifier extends AsyncNotifier<WeekPlan?> {
     });
   }
 
-  /// Strava-Sync auslösen, dann Plan mit frischem Forecast neu laden
+  /// Strava-Sync auslösen, dann Plan mit frischem Forecast neu laden (mit Ladebalken)
   Future<void> syncAndRefresh() async {
     try {
       final dio = ref.read(dioProvider);
@@ -278,6 +312,43 @@ class WeekPlanNotifier extends AsyncNotifier<WeekPlan?> {
       // Sync-Fehler ignorieren (kein Strava? Trotzdem Forecast neu laden)
     }
     state = await AsyncValue.guard(() => _fetchCurrentPlan());
+  }
+
+  /// Strava-Sync im Hintergrund — kein Ladebalken, Plan bleibt sichtbar
+  /// Danach Portionen automatisch anpassen wenn Training stark abweicht
+  Future<void> silentSync() async {
+    try {
+      final dio = ref.read(dioProvider);
+      await dio.post('/strava/sync');
+      await dio.post('/plan/adjust-portions');
+      final freshPlan = await _fetchCurrentPlan();
+      state = AsyncData(freshPlan);
+    } catch (_) {
+      // Fehler ignorieren — bestehender Plan bleibt unverändert
+    }
+  }
+
+  Future<void> toggleMealSkipped(String mealId) async {
+    final current = state.valueOrNull;
+    if (current == null) return;
+
+    final currentMeal = current.mealsByDay.values
+        .expand((m) => m)
+        .where((m) => m.id == mealId)
+        .firstOrNull;
+    if (currentMeal == null) return;
+
+    final newSkipped = !currentMeal.isSkipped;
+    state = AsyncData(current.withMealSkipToggled(mealId, newSkipped));
+
+    try {
+      final dio = ref.read(dioProvider);
+      final res = await dio.put('/plan/meals/$mealId/toggle-skipped');
+      final serverSkipped = res.data['skipped'] as bool? ?? newSkipped;
+      state = AsyncData(current.withMealSkipToggled(mealId, serverSkipped));
+    } catch (_) {
+      state = AsyncData(current.withMealSkipToggled(mealId, currentMeal.isSkipped));
+    }
   }
 
   Future<void> toggleMealEaten(String mealId) async {

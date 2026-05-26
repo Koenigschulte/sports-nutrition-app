@@ -3,16 +3,42 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'plan_provider.dart';
 
-class WeekPlanScreen extends ConsumerWidget {
+class WeekPlanScreen extends ConsumerStatefulWidget {
   const WeekPlanScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WeekPlanScreen> createState() => _WeekPlanScreenState();
+}
+
+class _WeekPlanScreenState extends ConsumerState<WeekPlanScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Strava im Hintergrund synchronisieren sobald der Screen geladen ist
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(weekPlanProvider.notifier).silentSync();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final planAsync = ref.watch(weekPlanProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Mein Wochenplan'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (v) { if (v == 'reset') _confirmReset(context); },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'reset', child: Row(children: [
+                Icon(Icons.refresh, size: 20),
+                SizedBox(width: 8),
+                Text('Plan neu generieren'),
+              ])),
+            ],
+          ),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: 0,
@@ -27,7 +53,7 @@ class WeekPlanScreen extends ConsumerWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showVoiceInput(context, ref),
+        onPressed: () => _showVoiceInput(context),
         icon: const Icon(Icons.mic),
         label: const Text('Spracheingabe'),
       ),
@@ -58,7 +84,24 @@ class WeekPlanScreen extends ConsumerWidget {
     );
   }
 
-  void _showVoiceInput(BuildContext context, WidgetRef ref) {
+  Future<void> _confirmReset(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Plan neu generieren?'),
+        content: const Text('Der aktuelle Wochenplan wird gelöscht und ein neuer Plan erstellt. Das kann 1–2 Minuten dauern.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Neu generieren')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      ref.read(weekPlanProvider.notifier).resetAndRegenerate();
+    }
+  }
+
+  void _showVoiceInput(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -146,8 +189,8 @@ class _DayCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasTraining = training != null && training!.hasTraining;
-    final totalCalories = meals.fold(0, (sum, m) => sum + m.calories);
-    final eatenCalories = meals.where((m) => m.isEaten).fold(0, (sum, m) => sum + m.calories);
+    final totalCalories = meals.fold(0, (sum, m) => sum + (m.calories * m.servingSize).round());
+    final eatenCalories = meals.where((m) => m.isEaten).fold(0, (sum, m) => sum + (m.calories * m.servingSize).round());
     final progress = totalCalories > 0 ? (eatenCalories / totalCalories).clamp(0.0, 1.0) : 0.0;
 
     return Card(
@@ -550,52 +593,111 @@ class _MealTileState extends ConsumerState<_MealTile> {
   @override
   Widget build(BuildContext context) {
     final meal = widget.meal;
-    return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: _mealColor(meal.type),
-        child: Icon(_mealIcon(meal.type), color: Colors.white, size: 18),
-      ),
-      title: Text(
-        meal.recipeName,
-        style: meal.isEaten
-            ? const TextStyle(decoration: TextDecoration.lineThrough, color: Colors.grey)
-            : null,
-      ),
-      subtitle: Text(
-        '${meal.calories} kcal · ${meal.proteinG}g Protein · ⏱ ${meal.prepMinutes} min',
-        style: meal.isEaten ? const TextStyle(color: Colors.grey) : null,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (meal.isTogo) const Chip(label: Text('To-Go')),
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios, size: 16),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            onPressed: (meal.alternativesCount > 0 && !_isLoading)
-                ? () => _requestAlternative(goBack: true)
-                : null,
-          ),
-          if (_isLoading)
-            const SizedBox(
-              width: 18, height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.arrow_forward_ios, size: 16),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-              onPressed: _requestAlternative,
-            ),
-          Checkbox(
-            value: meal.isEaten,
-            onChanged: (_) => ref.read(weekPlanProvider.notifier).toggleMealEaten(meal.id),
-          ),
-        ],
-      ),
+    final textStyle = (meal.isEaten || meal.isSkipped)
+        ? const TextStyle(decoration: TextDecoration.lineThrough, color: Colors.grey)
+        : null;
+    final subStyle = (meal.isEaten || meal.isSkipped)
+        ? const TextStyle(color: Colors.grey, fontSize: 12)
+        : const TextStyle(fontSize: 12);
+
+    return InkWell(
       onTap: () => _showMealDetail(context, meal),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: _mealColor(meal.type),
+              child: Icon(_mealIcon(meal.type), color: Colors.white, size: 16),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(meal.recipeName, style: textStyle, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text('${(meal.calories * meal.servingSize).round()} kcal · ${(meal.proteinG * meal.servingSize).round()}g P · ⏱ ${meal.prepMinutes} min', style: subStyle),
+                      if (meal.isTogo) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade100,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('To-Go', style: TextStyle(fontSize: 10)),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            GestureDetector(
+              onTap: () => ref.read(weekPlanProvider.notifier).toggleMealSkipped(meal.id),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: meal.isSkipped ? Colors.green.shade100 : Colors.orange.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: meal.isSkipped ? Colors.green : Colors.orange),
+                ),
+                child: Text(
+                  meal.isSkipped ? 'Zurück' : 'Skip',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: meal.isSkipped ? Colors.green.shade700 : Colors.orange.shade700,
+                  ),
+                ),
+              ),
+            ),
+            if (!meal.isEaten)
+              const SizedBox.shrink(), // placeholder removed
+            if (false) // old button disabled
+              IconButton(
+                icon: Icon(
+                  meal.isSkipped ? Icons.undo : Icons.block,
+                  size: 18,
+                  color: meal.isSkipped ? Colors.green : Colors.orange,
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                tooltip: meal.isSkipped ? 'Wieder einplanen' : 'Überspringen',
+                onPressed: () => ref.read(weekPlanProvider.notifier).toggleMealSkipped(meal.id),
+              ),
+            if (!meal.isSkipped) ...[
+              IconButton(
+                icon: const Icon(Icons.arrow_back_ios, size: 14),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 28),
+                onPressed: (meal.alternativesCount > 0 && !_isLoading)
+                    ? () => _requestAlternative(goBack: true)
+                    : null,
+              ),
+              if (_isLoading)
+                const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              else
+                IconButton(
+                  icon: const Icon(Icons.arrow_forward_ios, size: 14),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 24, minHeight: 28),
+                  onPressed: _requestAlternative,
+                ),
+              Checkbox(
+                value: meal.isEaten,
+                onChanged: (_) => ref.read(weekPlanProvider.notifier).toggleMealEaten(meal.id),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
